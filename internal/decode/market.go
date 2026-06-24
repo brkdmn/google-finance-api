@@ -161,7 +161,7 @@ func Related(raw json.RawMessage) ([]models.RelatedStock, error) {
 }
 
 type marketItem struct {
-	ticker, name                   string
+	ticker, name                 string
 	price, change, changePercent float64
 }
 

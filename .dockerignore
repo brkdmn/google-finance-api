@@ -5,7 +5,8 @@
 *.md
 LICENSE
 Dockerfile
-docker-compose.yml
+docker-compose*.yml
+scripts/
 .dockerignore
 .env
 .env.*

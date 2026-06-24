@@ -1,0 +1,116 @@
+name: deploy-prod
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "web/**"
+      - "Dockerfile"
+      - "docker-compose.prod.yml"
+      - "scripts/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "web/**"
+      - "Dockerfile"
+      - "docker-compose.prod.yml"
+      - "scripts/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -o /tmp/google-finance-api ./cmd/server
+
+  deploy:
+    needs: ci
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Archive repository
+        env:
+          RELEASE_FILE: google-finance-api-${{ github.sha }}-${{ github.run_id }}.release.tgz
+        run: git archive --format=tar.gz --output "${RELEASE_FILE}" HEAD
+
+      - name: Build Docker image
+        env:
+          IMAGE_FILE: google-finance-api-${{ github.sha }}-${{ github.run_id }}.image.tar.gz
+        run: |
+          docker build -t "google-finance-api:latest" .
+          docker save "google-finance-api:latest" | gzip > "${IMAGE_FILE}"
+
+      - name: Install SSH password helper
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Configure SSH known hosts
+        env:
+          SSH_HOST: ${{ secrets.STOCKPEEKR_PROD1_HOST }}
+          SSH_PORT: "22"
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "${SSH_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Upload release
+        env:
+          SSH_HOST: ${{ secrets.STOCKPEEKR_PROD1_HOST }}
+          SSH_PORT: "22"
+          SSH_USER: ${{ secrets.STOCKPEEKR_HOST_USERNAME }}
+          SSHPASS: ${{ secrets.STOCKPEEKR_HOST_PASSWORD }}
+          DEPLOY_PATH: /opt/google-finance-api
+          RELEASE_FILE: google-finance-api-${{ github.sha }}-${{ github.run_id }}.release.tgz
+          IMAGE_FILE: google-finance-api-${{ github.sha }}-${{ github.run_id }}.image.tar.gz
+        run: |
+          sshpass -e ssh -p "${SSH_PORT:-22}" "${SSH_USER}@${SSH_HOST}" "mkdir -p '${DEPLOY_PATH}'"
+          sshpass -e scp -P "${SSH_PORT:-22}" "${RELEASE_FILE}" "${SSH_USER}@${SSH_HOST}:/tmp/${RELEASE_FILE}"
+          sshpass -e scp -P "${SSH_PORT:-22}" "${IMAGE_FILE}" "${SSH_USER}@${SSH_HOST}:/tmp/${IMAGE_FILE}"
+
+      - name: Deploy service
+        env:
+          SSH_HOST: ${{ secrets.STOCKPEEKR_PROD1_HOST }}
+          SSH_PORT: "22"
+          SSH_USER: ${{ secrets.STOCKPEEKR_HOST_USERNAME }}
+          SSHPASS: ${{ secrets.STOCKPEEKR_HOST_PASSWORD }}
+          DEPLOY_PATH: /opt/google-finance-api
+          SERVICE: api
+          RELEASE_FILE: google-finance-api-${{ github.sha }}-${{ github.run_id }}.release.tgz
+          IMAGE_FILE: google-finance-api-${{ github.sha }}-${{ github.run_id }}.image.tar.gz
+        run: |
+          sshpass -e ssh -p "${SSH_PORT:-22}" "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_PATH='${DEPLOY_PATH}' SERVICE='${SERVICE}' RELEASE_FILE='${RELEASE_FILE}' IMAGE_FILE='${IMAGE_FILE}' flock -w 900 /tmp/google-finance-api-deploy.lock bash -s" <<'EOF'
+          set -euo pipefail
+          find "${DEPLOY_PATH}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          tar -xzf "/tmp/${RELEASE_FILE}" -C "${DEPLOY_PATH}"
+          gzip -dc "/tmp/${IMAGE_FILE}" | docker load
+          cd "${DEPLOY_PATH}"
+          bash scripts/deploy-service.sh "${SERVICE}"
+          rm -f "/tmp/${RELEASE_FILE}" "/tmp/${IMAGE_FILE}"
+          EOF

@@ -210,6 +210,37 @@ web/index.html                  Terminal temalı ana sayfa
 web/openapi.json                OpenAPI 3.1 spesifikasyonu
 ```
 
+## Deployment
+
+Production deployment `.github/workflows/deploy-prod.yml` üzerinden çalışır. `track-api` ile aynı sunucuya (`prod1`) deploy edilir.
+
+Pull request'ler `go test ./...` ve `go build ./cmd/server` çalıştırır. `main` branchine push aynı CI kontrollerini çalıştırır, ardından servisi `prod1`'e deploy eder.
+
+Docker image GitHub runner üzerinde build edilir, sunucuya yüklenir ve Docker Compose ile production host üzerinde build yapılmadan başlatılır. Deploy dosyaları run başına benzersiz isimlerle upload edilir ve remote deploy adımı `/tmp/google-finance-api-deploy.lock` üzerinden `flock` ile serialize edilir, böylece concurrent workflow run'ları aynı anda `/opt/google-finance-api`'yi değiştirmez.
+
+Manuel deploy GitHub Actions `workflow_dispatch` ile tetiklenebilir.
+
+Gerekli deployment secret'leri (track-api ile aynı):
+
+- `STOCKPEEKR_PROD1_HOST`
+- `STOCKPEEKR_HOST_USERNAME`
+- `STOCKPEEKR_HOST_PASSWORD`
+
+Production deploy repository'yi `/opt/google-finance-api` altına açar. Production Compose servisi external Docker network `stockpeekr-backend`'e bağlanır (track-api ile aynı network). Sunucu kurulumu deploy öncesi bu network'ü oluşturmalıdır. Network adı `TRACK_BACKEND_NETWORK` ile override edilebilir.
+
+Container host port'u `API_HOST_PORT` ile ayarlanabilir, varsayılan `5016` (track-api `5015` kullanır).
+
+Internal container DNS örneği: `http://googlefinance-api:8080`
+
+Servise özel production deploy sunucuda şöyle de çalıştırılabilir:
+
+```sh
+SERVICE=api make compose-prod-up-service
+make compose-prod-up-api
+make compose-prod-down
+make compose-prod-logs
+```
+
 ## Lisans
 
 MIT
